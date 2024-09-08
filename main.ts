@@ -1,73 +1,109 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder } from 'obsidian';
 
-// Remember to rename these classes and interfaces!
 
-interface MyPluginSettings {
-    mySetting: string;
+interface ScaffoldSettings {
+    scaffoldFolder: string;
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-    mySetting: 'default'
+
+const DEFAULT_SETTINGS: ScaffoldSettings = {
+    scaffoldFolder: 'Templates/Scaffold'
 }
 
-export default class MyPlugin extends Plugin {
-    settings: MyPluginSettings;
+
+class ScaffoldFolderModal extends Modal {
+    private plugin: ScaffoldPlugin;
+    private folderSelector: HTMLSelectElement;
+    private destinationInput: HTMLInputElement;
+    private destinationFolder: string;
+
+    constructor(app: App, plugin: ScaffoldPlugin, destinationFolder: string) {
+        super(app);
+        this.plugin = plugin;
+        this.destinationFolder = destinationFolder;
+    }
+
+    async populateFolderSelector() {
+        const scaffoldFolderPath = this.plugin.settings.scaffoldFolder;
+        const scaffoldFolder = this.app.vault.getAbstractFileByPath(scaffoldFolderPath);
+
+        if (scaffoldFolder instanceof TFolder) {
+            for (const child of scaffoldFolder.children) {
+                if (child instanceof TFolder) {
+                    this.folderSelector.createEl('option', { text: child.name });
+                }
+            }
+        } else {
+            console.error('Scaffold folder path is not a folder:', scaffoldFolderPath);
+        }
+    }
+
+    onOpen() {
+        const { contentEl } = this;
+
+        contentEl.createEl('h2', { text: 'Scaffold Folder' });
+
+        // Create folder selector
+        this.folderSelector = contentEl.createEl('select');
+        this.folderSelector.style.width = '200px';
+        this.folderSelector.style.margin = '0 10px';
+        this.populateFolderSelector();
+
+        // Create destination input
+        this.destinationInput = contentEl.createEl('input', { type: 'text', placeholder: 'Destination folder' });
+        this.destinationInput.style.width = '200px';
+        this.destinationInput.style.margin = '0 10px';
+        this.destinationInput.value = this.destinationFolder;
+
+        // Create confirm button
+        const confirmButton = contentEl.createEl('button', { text: 'Create' });
+        confirmButton.classList.add('mod-cta'); // Apply the accent color
+        confirmButton.style.margin = '0 10px';
+
+        confirmButton.addEventListener('click', () => {
+            const selectedFolder = this.folderSelector.value;
+            const destinationFolder = this.destinationInput.value;
+            this.plugin.createScaffold(selectedFolder, destinationFolder);
+            this.close();
+        });
+    }
+
+    onClose() {
+        const { contentEl } = this;
+        contentEl.empty();
+    }
+}
+
+export default class ScaffoldPlugin extends Plugin {
+    settings: ScaffoldSettings;
 
     async onload() {
         await this.loadSettings();
 
-
-        // This creates an icon in the left ribbon.
-        const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (evt: MouseEvent) => {
-            // Called when the user clicks the icon.
-            new Notice('This is a notice!');
-        });
-        // Perform additional things with the ribbon
-        ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-        // This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-        const statusBarItemEl = this.addStatusBarItem();
-        statusBarItemEl.setText('Status Bar Text');
-
-        // This adds a simple command that can be triggered anywhere
         this.addCommand({
-            id: 'open-sample-modal-simple',
-            name: 'Open sample modal (simple)',
+            id: 'scaffold-folder',
+            name: 'Scaffold folder',
             callback: () => {
-                new SampleModal(this.app).open();
+                new ScaffoldFolderModal(this.app, this, '').open();
             }
         });
-        // This adds an editor command that can perform some operation on the current editor instance
-        this.addCommand({
-            id: 'sample-editor-command',
-            name: 'Sample editor command',
-            editorCallback: (editor: Editor, view: MarkdownView) => {
-                console.log(editor.getSelection());
-                editor.replaceSelection('Sample Editor Command');
-            }
-        });
-        // This adds a complex command that can check whether the current state of the app allows execution of the command
-        this.addCommand({
-            id: 'open-sample-modal-complex',
-            name: 'Open sample modal (complex)',
-            checkCallback: (checking: boolean) => {
-                // Conditions to check
-                const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-                if (markdownView) {
-                    // If checking is true, we're simply "checking" if the command can be run.
-                    // If checking is false, then we want to actually perform the operation.
-                    if (!checking) {
-                        new SampleModal(this.app).open();
-                    }
 
-                    // This command will only show up in Command Palette when the check function returns true
-                    return true;
+        this.registerEvent(
+            this.app.workspace.on('file-menu', (menu, file) => {
+                if (file instanceof TFolder) {
+                    menu.addItem((item) => {
+                        item.setTitle('Scaffold')
+                            .setIcon('construction')
+                            .onClick(() => {
+                                new ScaffoldFolderModal(this.app, this, file.path).open();
+                            });
+                    });
                 }
-            }
-        });
+            })
+        );
 
         // This adds a settings tab so the user can configure various aspects of the plugin
-        this.addSettingTab(new SampleSettingTab(this.app, this));
+        this.addSettingTab(new ScaffoldSettingTab(this.app, this));
 
         // If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
         // Using this function will automatically remove the event listener when this plugin is disabled.
@@ -90,28 +126,38 @@ export default class MyPlugin extends Plugin {
     async saveSettings() {
         await this.saveData(this.settings);
     }
+
+    async createScaffold(originFolder: string, destinationFolder: string) {
+        const scaffoldFolderPath = this.settings.scaffoldFolder;
+        const sourcePath = `${scaffoldFolderPath}/${originFolder}`;
+        const sourceFolder = this.app.vault.getAbstractFileByPath(sourcePath);
+
+        if (sourceFolder instanceof TFolder) {
+            await this.copyFolderContents(sourceFolder, destinationFolder);
+        } else {
+            console.error('Source path is not a folder:', sourcePath);
+        }
+    }
+
+    async copyFolderContents(sourceFolder: TFolder, destinationPath: string) {
+        for (const child of sourceFolder.children) {
+            const childDestinationPath = `${destinationPath}/${child.name}`;
+            if (child instanceof TFolder) {
+                await this.app.vault.createFolder(childDestinationPath);
+                await this.copyFolderContents(child, childDestinationPath);
+            } else if (child instanceof TFile) {
+                const content = await this.app.vault.read(child);
+                await this.app.vault.create(childDestinationPath, content);
+            }
+        }
+    }
 }
 
-class SampleModal extends Modal {
-    constructor(app: App) {
-        super(app);
-    }
 
-    onOpen() {
-        const {contentEl} = this;
-        contentEl.setText('Woah!');
-    }
+class ScaffoldSettingTab extends PluginSettingTab {
+    plugin: ScaffoldPlugin;
 
-    onClose() {
-        const {contentEl} = this;
-        contentEl.empty();
-    }
-}
-
-class SampleSettingTab extends PluginSettingTab {
-    plugin: MyPlugin;
-
-    constructor(app: App, plugin: MyPlugin) {
+    constructor(app: App, plugin: ScaffoldPlugin) {
         super(app, plugin);
         this.plugin = plugin;
     }
@@ -121,14 +167,15 @@ class SampleSettingTab extends PluginSettingTab {
 
         containerEl.empty();
 
+        // TODO: Add folder suggestion
         new Setting(containerEl)
-            .setName('Setting #1')
-            .setDesc('It\'s a secret')
+            .setName('Scaffold folder location')
+            .setDesc('Files structures in this folder will be available for scaffolding')
             .addText(text => text
-                .setPlaceholder('Enter your secret')
-                .setValue(this.plugin.settings.mySetting)
+                .setPlaceholder('Enter your scaffold folder location')
+                .setValue(this.plugin.settings.scaffoldFolder)
                 .onChange(async (value) => {
-                    this.plugin.settings.mySetting = value;
+                    this.plugin.settings.scaffoldFolder = value;
                     await this.plugin.saveSettings();
                 }));
     }
