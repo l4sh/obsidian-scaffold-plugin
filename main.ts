@@ -140,6 +140,10 @@ export default class ScaffoldPlugin extends Plugin {
     }
 
     async copyFolderContents(sourceFolder: TFolder, destinationPath: string) {
+        if (!await this.app.vault.adapter.exists(destinationPath)) {
+            await this.app.vault.createFolder(destinationPath);
+        }
+
         for (const child of sourceFolder.children) {
             const childDestinationPath = `${destinationPath}/${child.name}`;
             if (child instanceof TFolder) {
